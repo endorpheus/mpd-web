@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="UTF-8">
+<title>mpd-web</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230d0d0d' width='100' height='100' rx='15'/><circle cx='50' cy='50' r='35' fill='none' stroke='%2339ff14' stroke-width='6'/><polygon points='42,35 42,65 68,50' fill='%2339ff14'/></svg>">
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+  :root { --neon: #39ff14; --bg: #0d0d0d; --card: #1a1a1a; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: #e0e0e0; font-family: 'Segoe UI', system-ui; display: flex; }
+  aside { width: 300px; flex-shrink: 0; height: 100vh; overflow-y: auto; }
+  aside::-webkit-scrollbar { width: 8px; }
+  aside::-webkit-scrollbar-track { background: var(--bg); }
+  aside::-webkit-scrollbar-thumb { background: var(--neon); border-radius: 4px; }
+  aside::-webkit-scrollbar-thumb:hover { background: #2ecc0f; }
+  main { flex: 1; min-width: 400px; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 2rem; padding-top: 60px; box-sizing: border-box; }
+  .neon-glow { box-shadow: 0 0 20px var(--neon), inset 0 0 10px var(--neon); }
+  .neon-text { text-shadow: 0 0 10px var(--neon); }
+  #cursor-trail { position: fixed; pointer-events: none; z-index: 9999; }
+  .particle { position: absolute; width: 6px; height: 6px; background: var(--neon); border-radius: 50%; opacity: 0.7; pointer-events: none; animation: fadeOut 0.8s forwards; }
+  @keyframes fadeOut { to { opacity: 0; transform: scale(0.3) translateY(-30px); } }
+  .art-placeholder { background: linear-gradient(45deg, #111, #222, #111); animation: pulse 4s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.8; } }
+  #lyrics-modal { transition: opacity 0.3s; }
+  .mode-btn { color: #a1a1aa; background: rgba(255,255,255,0.05); }
+  .mode-btn:hover { color: var(--neon); }
+  .mode-btn.active { color: var(--neon); background: rgba(57, 255, 20, 0.2); box-shadow: 0 0 10px var(--neon); }
+  .queue-btn { opacity: 0; transition: opacity 0.2s; padding: 4px; }
+  .group:hover .queue-btn { opacity: 1; }
+  .queue-btn:hover { color: var(--neon) !important; }
+  #album-art-container:hover #blacklist-btn { opacity: 1 !important; }
+  #blacklist-btn:hover { background: #f87171 !important; border-color: #f87171 !important; }
+  #blacklist-btn:hover i { color: #000 !important; }
+  .queue-item { transition: transform 0.15s, background 0.15s; }
+  .queue-item.dragging { opacity: 0.5; transform: scale(0.98); }
+  .queue-item.drag-over { background: rgba(57, 255, 20, 0.2); border: 1px dashed var(--neon); }
+  .drag-handle { cursor: grab; opacity: 0.4; transition: opacity 0.2s; }
+  .drag-handle:hover { opacity: 1; }
+  .queue-item:active .drag-handle { cursor: grabbing; }
+</style>
+</head>
+<body style="display: flex; height: 100vh; margin: 0;">
+
+  <!-- Cursor trail -->
+  <div id="cursor-trail"></div>
+
+  <!-- Sidebar -->
+  <aside style="background: rgba(9,9,11,0.95); border-right: 1px solid rgba(57, 255, 20, 0.3); display: flex; flex-direction: column;">
+    <div class="p-4 neon-glow" style="border-bottom: 1px solid rgba(57, 255, 20, 0.2);">
+      <h1 class="text-3xl font-black neon-text flex items-center gap-3">
+        <i class="fa-solid fa-bolt" style="color: var(--neon);"></i> mpd-web
+      </h1>
+      <p class="text-sm mt-1" style="color: var(--neon); opacity: 0.7;">MPD Cyber Jukebox</p>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex border-b border-zinc-800">
+      <button id="queue-tab-btn" onclick="showTab('queue-tab')" class="flex-1 py-3 font-medium tab-btn" style="color: var(--neon); border-bottom: 2px solid var(--neon);">Queue</button>
+      <button id="library-tab-btn" onclick="showTab('library-tab')" class="flex-1 py-3 font-medium tab-btn" style="color: #a1a1aa;">Library</button>
+    </div>
+
+    <!-- Search (only shown in queue tab) -->
+    <div id="search-container" class="p-4 border-b border-zinc-800">
+      <div class="relative">
+        <input id="search-input" type="text" placeholder="Search artist/title/album/any..." class="w-full bg-zinc-900 rounded-lg py-3 px-4 pl-10 text-sm focus:outline-none neon-glow" style="border: 1px solid rgba(57, 255, 20, 0.4); color: #e0e0e0;">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2" style="color: var(--neon); opacity: 0.7;"></i>
+      </div>
+      <div id="search-results" class="mt-3 max-h-96 overflow-auto hidden"></div>
+    </div>
+
+    <!-- Queue content -->
+    <div id="queue-tab" class="flex-1 overflow-auto p-4 tab-content">
+      <div class="text-sm mb-3 font-mono uppercase tracking-wider" style="color: var(--neon); opacity: 0.6;">Current Queue</div>
+      <div id="queue"></div>
+    </div>
+
+    <!-- Library content -->
+    <div id="library-tab" class="flex-1 overflow-auto p-4 tab-content hidden">
+      <div id="library-view"></div>
+    </div>
+
+    <!-- Queue actions -->
+    <div class="p-4 border-t border-zinc-800 flex gap-2 flex-wrap">
+      <button onclick="cmd('clear'); notify('Queue cleared')" class="flex-1 py-2 rounded-lg neon-glow text-sm" style="background-color: rgba(127, 29, 29, 0.5); color: #fca5a5;"><i class="fa-solid fa-broom"></i> Clear</button>
+      <button onclick="cmd('shuffle'); notify('Queue shuffled')" class="flex-1 py-2 rounded-lg neon-glow text-sm" style="background-color: rgba(88, 28, 135, 0.5); color: #c4b5fd;"><i class="fa-solid fa-shuffle"></i> Shuffle</button>
+      <button onclick="cmd('update'); notify('Scanning library...')" class="flex-1 py-2 rounded-lg neon-glow text-sm" style="background-color: rgba(30, 64, 175, 0.5); color: #93c5fd;"><i class="fa-solid fa-rotate"></i> Update DB</button>
+    </div>
+  </aside>
+
+  <!-- Main Player -->
+  <main>
+    <!-- Album Art -->
+    <div id="album-art-container" style="position: relative; margin-bottom: 40px;">
+      <div id="album-art" class="neon-glow" style="width: 320px; min-width: 320px; height: 320px; min-height: 320px; border-radius: 24px; overflow: hidden; background-color: #222; flex-shrink: 0; position: relative;">
+        <div id="album-art-placeholder" style="position: absolute; inset: 0; z-index: 1; transition: opacity 0.3s; background: #0a0a0a;">
+          <canvas id="nebula-canvas" width="320" height="320" style="width: 100%; height: 100%;"></canvas>
+        </div>
+        <img id="album-art-img" style="width: 100%; height: 100%; object-fit: contain; position: absolute; inset: 0; z-index: 2; opacity: 0; transition: opacity 0.3s;">
+      </div>
+      <button id="blacklist-btn" onclick="blacklistCurrentImage()" title="Skip this image (blacklist)" style="position: absolute; top: 10px; right: 10px; z-index: 100; background: #222; border: 2px solid #f87171; border-radius: 50%; width: 36px; height: 36px; cursor: pointer; opacity: 0; transition: opacity 0.2s;">
+        <span style="color: #f87171; font-size: 18px; font-weight: bold;">✕</span>
+      </button>
+    </div>
+
+    <!-- Info + Lyrics button -->
+    <div style="text-align: center; max-width: 500px;">
+      <div id="title" class="neon-text" style="font-size: 2.5rem; font-weight: 900; margin-bottom: 12px;">—</div>
+      <div id="artist-album" style="font-size: 1.25rem; margin-bottom: 16px; color: #a1a1aa;">—</div>
+      <button onclick="showLyrics()" class="neon-glow" style="color: var(--neon); background: #27272a; padding: 8px 24px; border-radius: 8px; border: none; cursor: pointer;">
+        <i class="fa-solid fa-scroll" style="margin-right: 8px;"></i> Lyrics
+      </button>
+    </div>
+
+    <!-- Progress -->
+    <!-- Progress -->
+    <div style="width: 100%; max-width: 400px; margin-top: 40px;">
+      <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 8px; font-family: monospace; color: var(--neon); opacity: 0.7;">
+        <span id="elapsed">0:00</span>
+        <span id="duration">0:00</span>
+      </div>
+      <div class="neon-glow" style="height: 8px; background: #27272a; border-radius: 4px; overflow: hidden;">
+        <div id="progress" style="height: 100%; width: 0; background: linear-gradient(to right, var(--neon), #22d3ee); transition: width 0.3s;"></div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div style="display: flex; align-items: center; gap: 32px; margin-top: 40px;">
+      <button onclick="cmd('prev'); notify('Previous')" style="font-size: 2rem; color: #e0e0e0; background: none; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center;" onmouseover="this.style.color='var(--neon)'" onmouseout="this.style.color='#e0e0e0'">
+        <i class="fa-solid fa-backward"></i>
+        <span style="font-size: 12px; margin-top: 4px;">Prev</span>
+      </button>
+      <button id="play-btn" onclick="togglePlay()" class="neon-glow" style="width: 96px; height: 96px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2rem; background-color: var(--neon); color: black; border: none; cursor: pointer;">
+        <i class="fa-solid fa-play"></i>
+      </button>
+      <button onclick="cmd('next'); notify('Next')" style="font-size: 2rem; color: #e0e0e0; background: none; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center;" onmouseover="this.style.color='var(--neon)'" onmouseout="this.style.color='#e0e0e0'">
+        <i class="fa-solid fa-forward"></i>
+        <span style="font-size: 12px; margin-top: 4px;">Next</span>
+      </button>
+    </div>
+
+    <div class="flex gap-6 mt-8">
+      <button id="btn-random" onclick="cmd('random')" class="transition flex flex-col items-center px-4 py-2 rounded-lg mode-btn">
+        <i class="fa-solid fa-shuffle text-2xl mb-1"></i>
+        <span class="text-xs">Random</span>
+      </button>
+      <button id="btn-repeat" onclick="cmd('repeat')" class="transition flex flex-col items-center px-4 py-2 rounded-lg mode-btn">
+        <i class="fa-solid fa-repeat text-2xl mb-1"></i>
+        <span class="text-xs">Repeat</span>
+      </button>
+      <button id="btn-single" onclick="cmd('single')" class="transition flex flex-col items-center px-4 py-2 rounded-lg mode-btn">
+        <i class="fa-solid fa-1 text-2xl mb-1"></i>
+        <span class="text-xs">Single</span>
+      </button>
+      <button id="btn-consume" onclick="cmd('consume')" class="transition flex flex-col items-center px-4 py-2 rounded-lg mode-btn">
+        <i class="fa-solid fa-fire text-2xl mb-1"></i>
+        <span class="text-xs">Consume</span>
+      </button>
+      <button onclick="cmd('stop')" class="transition flex flex-col items-center px-4 py-2 rounded-lg" style="color: #a1a1aa; background: rgba(255,255,255,0.05);">
+        <i class="fa-solid fa-stop text-2xl mb-1"></i>
+        <span class="text-xs">Stop</span>
+      </button>
+    </div>
+
+    <!-- Volume -->
+    <div class="flex items-center gap-4 mt-8 w-80">
+      <i class="fa-solid fa-volume-low text-xl" style="color: var(--neon);"></i>
+      <input type="range" id="volume" min="0" max="100" value="80" class="flex-1" style="accent-color: var(--neon);" oninput="setVolume(this.value)">
+      <span id="vol-text" class="text-sm font-mono w-12 text-right" style="color: #e0e0e0;">80%</span>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed bottom-10 left-1/2 -translate-x-1/2 bg-zinc-900/90 border border-neon/50 text-neon px-8 py-4 rounded-xl shadow-2xl hidden backdrop-blur-md transition-all duration-300">Action!</div>
+
+    <!-- Lyrics Modal -->
+    <div id="lyrics-modal" class="fixed inset-0 bg-black/70 hidden flex items-center justify-center z-50">
+      <div class="bg-zinc-900 border border-neon/50 rounded-2xl p-8 max-w-2xl w-full max-h-[80vh] overflow-auto relative neon-glow">
+        <button onclick="closeLyrics()" class="absolute top-4 right-4 text-neon hover:text-white text-2xl"><i class="fa-solid fa-times"></i></button>
+        <h2 class="text-3xl font-bold neon-text mb-6">Lyrics</h2>
+        <pre id="lyrics-content" class="text-lg whitespace-pre-wrap font-sans text-zinc-200">Loading...</pre>
+      </div>
+    </div>
+  </main>
+
+<script>
+// Cursor trail
+const trail = document.getElementById('cursor-trail');
+document.addEventListener('mousemove', e => {
+  const p = document.createElement('div');
+  p.className = 'particle';
+  p.style.left = e.clientX + 'px';
+  p.style.top = e.clientY + 'px';
+  trail.appendChild(p);
+  setTimeout(() => p.remove(), 800);
+});
+
+let isPlaying = false;
+let currentFile = '';
+let currentArtist = '';
+let currentAlbum = '';
+let currentArtUrl = null;
+let lastQueueHash = '';
+let currentCacheKey = '';
+let draggedPos = null;
+
+// Sanitize text to prevent XSS
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function api(cmd, format=null, args=[], binary=false) {
+  let url = `/?cmd=${cmd}`;
+  if (format) url += `&format=${encodeURIComponent(format)}`;
+  if (args.length) url += args.map(a => `&args=${encodeURIComponent(a)}`).join('');
+  if (binary) url += '&binary=1';
+  const r = await fetch(url);
+  if (binary) return await r.blob();
+  return await r.text();
+}
+
+function notify(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 1800);
+}
+
+function showTab(tabId) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.getElementById(tabId).classList.remove('hidden');
+
+  // Reset all tab buttons
+  document.getElementById('queue-tab-btn').style.color = '#a1a1aa';
+  document.getElementById('queue-tab-btn').style.borderBottom = '2px solid transparent';
+  document.getElementById('library-tab-btn').style.color = '#a1a1aa';
+  document.getElementById('library-tab-btn').style.borderBottom = '2px solid transparent';
+
+  // Activate selected tab
+  const activeBtn = document.getElementById(tabId + '-btn');
+  activeBtn.style.color = 'var(--neon)';
+  activeBtn.style.borderBottom = '2px solid var(--neon)';
+
+  if (tabId === 'queue-tab') {
+    document.getElementById('search-container').classList.remove('hidden');
+  } else {
+    document.getElementById('search-container').classList.add('hidden');
+    loadLibrary();
+  }
+}
+
+async function loadLibrary() {
+  const view = document.getElementById('library-view');
+  view.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'text-sm mb-3 font-mono uppercase tracking-wider';
+  header.style.color = 'var(--neon)';
+  header.style.opacity = '0.7';
+  header.textContent = 'Browse';
+  view.appendChild(header);
+
+  // "All Files" option to see everything
+  const allDiv = document.createElement('div');
+  allDiv.className = 'px-4 py-3 hover:bg-zinc-800/70 rounded-xl cursor-pointer';
+  allDiv.style.color = '#f59e0b';
+  allDiv.innerHTML = '<i class="fa-solid fa-folder-open mr-2"></i>All Files';
+  allDiv.onclick = () => loadAllFiles();
+  view.appendChild(allDiv);
+
+  // Separator
+  const sep = document.createElement('div');
+  sep.className = 'text-sm my-3 font-mono uppercase tracking-wider';
+  sep.style.color = 'var(--neon)';
+  sep.style.opacity = '0.5';
+  sep.textContent = 'By Artist';
+  view.appendChild(sep);
+
+  const artists = await api('list', null, ['artist']);
+  artists.trim().split('\n').filter(Boolean).forEach(artist => {
+    const div = document.createElement('div');
+    div.className = 'px-4 py-3 hover:bg-zinc-800/70 rounded-xl cursor-pointer';
+    div.style.color = '#e0e0e0';
+    div.textContent = artist;
+    div.onclick = () => loadAlbums(artist);
+    view.appendChild(div);
+  });
+}
+
+async function loadAllFiles() {
+  const view = document.getElementById('library-view');
+  view.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'text-sm mb-3 font-mono uppercase tracking-wider';
+  header.style.color = 'var(--neon)';
+  header.style.opacity = '0.7';
+  header.textContent = 'All Files';
+  view.appendChild(header);
+
+  const backBtn = document.createElement('button');
+  backBtn.className = 'hover:underline mb-4 block';
+  backBtn.style.color = 'var(--neon)';
+  backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i> Back';
+  backBtn.onclick = loadLibrary;
+  view.appendChild(backBtn);
+
+  const files = await api('listall');
+  files.trim().split('\n').filter(Boolean).forEach(file => {
+    const displayName = file.split('/').pop().replace(/\.[^.]+$/, '');
+    const div = document.createElement('div');
+    div.className = 'px-3 py-2 hover:bg-zinc-800/70 rounded-lg cursor-pointer flex justify-between items-center';
+
+    const span = document.createElement('span');
+    span.className = 'truncate flex-1';
+    span.style.color = '#e0e0e0';
+    span.textContent = displayName;
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'ml-2 px-2';
+    addBtn.style.color = 'var(--neon)';
+    addBtn.innerHTML = '<i class="fa-solid fa-plus"></i>';
+    addBtn.onclick = (e) => { e.stopPropagation(); addTrack(file, false); };
+
+    div.appendChild(span);
+    div.appendChild(addBtn);
+    div.onclick = () => addTrack(file, true);
+    view.appendChild(div);
+  });
+}
+
+async function loadAlbums(artist) {
+  const view = document.getElementById('library-view');
+  view.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'text-sm mb-3 font-mono uppercase tracking-wider';
+  header.style.color = 'var(--neon)';
+  header.style.opacity = '0.7';
+  header.textContent = 'Albums by ' + artist;
+  view.appendChild(header);
+
+  const backBtn = document.createElement('button');
+  backBtn.className = 'hover:underline mb-4 block';
+  backBtn.style.color = 'var(--neon)';
+  backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i> Back to artists';
+  backBtn.onclick = loadLibrary;
+  view.appendChild(backBtn);
+
+  const albums = await api('list', null, ['album', 'artist', artist]);
+  albums.trim().split('\n').filter(Boolean).forEach(album => {
+    const div = document.createElement('div');
+    div.className = 'px-4 py-3 hover:bg-zinc-800/70 rounded-xl cursor-pointer';
+    div.style.color = '#e0e0e0';
+    div.textContent = album || '[No album]';
+    div.onclick = () => loadTracks(artist, album);
+    view.appendChild(div);
+  });
+}
+
+async function loadTracks(artist, album) {
+  const view = document.getElementById('library-view');
+  view.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'text-sm mb-3 font-mono uppercase tracking-wider';
+  header.style.color = 'var(--neon)';
+  header.style.opacity = '0.7';
+  header.textContent = 'Tracks in ' + (album || 'Unknown');
+  view.appendChild(header);
+
+  const backBtn = document.createElement('button');
+  backBtn.className = 'hover:underline mb-4 block';
+  backBtn.style.color = 'var(--neon)';
+  backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i> Back to albums';
+  backBtn.onclick = () => loadAlbums(artist);
+  view.appendChild(backBtn);
+
+  const tracks = await api('find', '%title%:::%file%', ['album', album, 'artist', artist]);
+  tracks.trim().split('\n').filter(Boolean).forEach(line => {
+    const [title, file] = line.split(':::');
+    const div = document.createElement('div');
+    div.className = 'px-3 py-2 hover:bg-zinc-800/70 rounded-lg cursor-pointer flex justify-between items-center';
+
+    const span = document.createElement('span');
+    span.className = 'truncate flex-1';
+    span.style.color = '#e0e0e0';
+    span.textContent = title || file.split('/').pop();
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'ml-2 px-2';
+    addBtn.style.color = 'var(--neon)';
+    addBtn.innerHTML = '<i class="fa-solid fa-plus"></i>';
+    addBtn.onclick = (e) => { e.stopPropagation(); addTrack(file, false); };
+
+    div.appendChild(span);
+    div.appendChild(addBtn);
+    div.onclick = () => addTrack(file, true);
+    view.appendChild(div);
+  });
+}
+
+let lastArtistSearch = '';
+let lastArtistUrl = '';
+let artLoaded = false;
+let artRefreshInterval = null;
+let currentTitle = '';
+
+function showArtImage(url) {
+  const img = document.getElementById('album-art-img');
+  const placeholder = document.getElementById('album-art-placeholder');
+
+  img.onload = () => {
+    img.style.opacity = '1';
+    placeholder.style.opacity = '0';
+    artLoaded = true;
+  };
+  img.onerror = () => {
+    showArtPlaceholder();
+  };
+  img.src = url;
+}
+
+function showArtPlaceholder() {
+  const img = document.getElementById('album-art-img');
+  const placeholder = document.getElementById('album-art-placeholder');
+  img.style.opacity = '0';
+  img.src = '';
+  placeholder.style.opacity = '1';
+  artLoaded = false;
+  // Revoke old blob URL to free memory
+  if (currentArtUrl) {
+    URL.revokeObjectURL(currentArtUrl);
+    currentArtUrl = null;
+  }
+}
+
+async function blacklistCurrentImage() {
+  if (!currentCacheKey) {
+    notify('No image to blacklist');
+    return;
+  }
+  try {
+    const resp = await fetch(`/?cmd=blacklistimg&args=${encodeURIComponent(currentCacheKey)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      notify(`Blacklisted! ${data.remaining} images left`);
+      // Load next image immediately
+      loadArt(true);
+    } else {
+      notify('Failed to blacklist');
+    }
+  } catch (e) {
+    notify('Error blacklisting image');
+  }
+}
+
+let hasEmbeddedArt = false;
+
+async function loadArt(forceRefresh = false) {
+  // Clear any existing refresh interval when track changes
+  if (!forceRefresh) {
+    if (artRefreshInterval) {
+      clearInterval(artRefreshInterval);
+      artRefreshInterval = null;
+    }
+    hasEmbeddedArt = false;
+    // Always show placeholder first on track change
+    showArtPlaceholder();
+  }
+
+  if (!currentFile) {
+    return;
+  }
+
+  // On initial load, check for embedded art first
+  if (!forceRefresh) {
+    // Try embedded album art
+    try {
+      const resp = await fetch(`/?cmd=albumart&args=${encodeURIComponent(currentFile)}&binary=1`);
+      if (resp.ok && resp.headers.get('content-type')?.startsWith('image/')) {
+        const blob = await resp.blob();
+        if (blob.size > 500) {
+          if (currentArtUrl) URL.revokeObjectURL(currentArtUrl);
+          currentArtUrl = URL.createObjectURL(blob);
+          showArtImage(currentArtUrl);
+          hasEmbeddedArt = true;
+        }
+      }
+    } catch (e) {}
+
+    // Try embedded picture if no album art
+    if (!hasEmbeddedArt) {
+      try {
+        const resp = await fetch(`/?cmd=readpicture&args=${encodeURIComponent(currentFile)}&binary=1`);
+        if (resp.ok && resp.headers.get('content-type')?.startsWith('image/')) {
+          const blob = await resp.blob();
+          if (blob.size > 500) {
+            if (currentArtUrl) URL.revokeObjectURL(currentArtUrl);
+            currentArtUrl = URL.createObjectURL(blob);
+            showArtImage(currentArtUrl);
+            hasEmbeddedArt = true;
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Fetch artist/album image (as fallback or for cycling)
+  // Use artist+album if available, otherwise extract from filename
+  let searchArtist = currentArtist;
+  let searchAlbum = currentAlbum;
+
+  if (!searchArtist && currentFile) {
+    // Extract search term from filename (remove path, extension, clean up)
+    let filename = currentFile.split('/').pop().replace(/\.[^.]+$/, '');
+    // Clean up common patterns: underscores, dashes, track numbers
+    filename = filename.replace(/[_-]/g, ' ').replace(/^\d+\s*/, '').trim();
+    searchArtist = filename;
+    searchAlbum = 'soundtrack';  // Hint for music-related results
+  }
+
+  if (searchArtist && (!hasEmbeddedArt || forceRefresh)) {
+    try {
+      let url = `/?cmd=artistart&args=${encodeURIComponent(searchArtist)}`;
+      if (searchAlbum) url += `&args=${encodeURIComponent(searchAlbum)}`;
+      const resp = await fetch(url);
+      // Track cache key for blacklisting
+      currentCacheKey = resp.headers.get('X-Cache-Key') || `${searchArtist.toLowerCase()}|${(searchAlbum || '').toLowerCase()}`;
+      if (resp.ok && resp.status === 200) {
+        const blob = await resp.blob();
+        if (blob.size > 500) {
+          if (currentArtUrl) URL.revokeObjectURL(currentArtUrl);
+          currentArtUrl = URL.createObjectURL(blob);
+          showArtImage(currentArtUrl);
+        }
+      }
+      // If 204 No Content, keep showing nebula (do nothing)
+    } catch (e) {}
+  }
+
+  // Always set up 15-second refresh for images (artist or filename-based)
+  if (currentFile && !artRefreshInterval && isPlaying) {
+    artRefreshInterval = setInterval(() => {
+      if (currentFile && isPlaying) loadArt(true);
+    }, 15000);
+  }
+}
+
+async function showLyrics() {
+  if (!currentFile) {
+    document.getElementById('lyrics-content').textContent = "Nothing playing right now...";
+  } else {
+    document.getElementById('lyrics-content').textContent = "Loading lyrics...";
+    // Pass file, artist, and title for web lookup fallback
+    const lyrics = await api('lyrics', null, [currentFile, currentArtist || '', currentTitle || '']);
+    document.getElementById('lyrics-content').textContent = lyrics.trim() || "No lyrics found";
+  }
+  document.getElementById('lyrics-modal').classList.remove('hidden');
+}
+
+function closeLyrics() {
+  document.getElementById('lyrics-modal').classList.add('hidden');
+}
+
+async function update() {
+  const cur = await api('current', '%title%:::%artist%:::%album%:::%file%');
+  const [title, artist, album, file] = cur.trim().split(':::');
+  document.getElementById('title').textContent = title || 'No track spinning';
+  document.getElementById('artist-album').textContent = [artist, album].filter(Boolean).join(' • ') || '—';
+
+  // Only reload art if track changed
+  const trackChanged = (file || '') !== currentFile;
+  currentFile = file || '';
+  currentArtist = artist || '';
+  currentAlbum = album || '';
+  currentTitle = title || '';
+
+  if (trackChanged) loadArt();
+
+  const status = await api('status');
+  let vol=80, elapsed='0:00', total='0:00', perc=0, state='stop';
+  let randomOn=false, repeatOn=false, singleOn=false, consumeOn=false;
+
+  status.split('\n').forEach(l => {
+    if (l.includes('volume:')) vol = parseInt(l.match(/(\d+)%/)?.[1] || 80);
+    if (l.includes('[')) {
+      state = l.match(/\[(.*?)\]/)?.[1] || 'stop';
+      const m = l.match(/(\d+:\d+)\/(\d+:\d+) \((\d+)%\)/);
+      if (m) [_, elapsed, total, perc] = m;
+    }
+    // Parse mode flags - check for "flag: on" specifically
+    const randomMatch = l.match(/random:\s*(on|off)/);
+    const repeatMatch = l.match(/repeat:\s*(on|off)/);
+    const singleMatch = l.match(/single:\s*(on|off)/);
+    const consumeMatch = l.match(/consume:\s*(on|off)/);
+    if (randomMatch) randomOn = randomMatch[1] === 'on';
+    if (repeatMatch) repeatOn = repeatMatch[1] === 'on';
+    if (singleMatch) singleOn = singleMatch[1] === 'on';
+    if (consumeMatch) consumeOn = consumeMatch[1] === 'on';
+  });
+
+  const wasPlaying = isPlaying;
+  isPlaying = state === 'playing';
+  document.getElementById('play-btn').innerHTML = isPlaying
+    ? '<i class="fa-solid fa-pause"></i>'
+    : '<i class="fa-solid fa-play"></i>';
+
+  // Pause/resume image cycling based on playback state
+  if (!isPlaying && artRefreshInterval) {
+    clearInterval(artRefreshInterval);
+    artRefreshInterval = null;
+  } else if (isPlaying && !artRefreshInterval && currentFile) {
+    artRefreshInterval = setInterval(() => {
+      if (currentFile && isPlaying) loadArt(true);
+    }, 15000);
+  }
+
+  // Update mode button states
+  document.getElementById('btn-random').classList.toggle('active', randomOn);
+  document.getElementById('btn-repeat').classList.toggle('active', repeatOn);
+  document.getElementById('btn-single').classList.toggle('active', singleOn);
+  document.getElementById('btn-consume').classList.toggle('active', consumeOn);
+
+  document.getElementById('elapsed').textContent = elapsed;
+  document.getElementById('duration').textContent = total;
+  document.getElementById('progress').style.width = perc + '%';
+  document.getElementById('volume').value = vol;
+  document.getElementById('vol-text').textContent = vol + '%';
+
+  // Queue - mpc playlist returns track names, one per line
+  const q = await api('playlist');
+  const queueHash = q.trim();
+
+  // Only rebuild queue if it changed
+  if (queueHash !== lastQueueHash) {
+    lastQueueHash = queueHash;
+    const queueEl = document.getElementById('queue');
+    queueEl.innerHTML = '';
+
+    const lines = queueHash.split('\n').filter(l => l.trim());
+    const totalTracks = lines.length;
+
+    lines.forEach((trackName, index) => {
+    const pos = index + 1;
+    const div = document.createElement('div');
+    div.className = 'queue-item px-3 py-2 hover:bg-zinc-800/70 rounded-lg cursor-pointer flex items-start group';
+    div.draggable = true;
+    div.dataset.pos = pos;
+
+    // Drag handle
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'drag-handle flex-shrink-0 mr-2 pt-0.5';
+    dragHandle.innerHTML = '<i class="fa-solid fa-grip-vertical" style="color: var(--neon);"></i>';
+    dragHandle.onclick = (e) => e.stopPropagation();
+
+    // Position number
+    const posSpan = document.createElement('span');
+    posSpan.className = 'w-6 text-right font-mono flex-shrink-0 text-sm pt-0.5';
+    posSpan.style.color = 'var(--neon)';
+    posSpan.style.opacity = '0.6';
+    posSpan.textContent = pos;
+
+    // Track name - full text with word wrap
+    const infoSpan = document.createElement('span');
+    infoSpan.className = 'flex-1 mx-3';
+    infoSpan.style.color = '#e0e0e0';
+    infoSpan.style.wordBreak = 'break-word';
+    infoSpan.style.lineHeight = '1.4';
+    infoSpan.textContent = trackName;
+
+    // Control buttons container
+    const btnContainer = document.createElement('div');
+    btnContainer.className = 'flex items-center gap-1 flex-shrink-0';
+
+    // Delete button only (drag replaces up/down)
+    const delBtn = document.createElement('button');
+    delBtn.className = 'queue-btn';
+    delBtn.style.color = '#f87171';
+    delBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+    delBtn.onclick = (e) => { e.stopPropagation(); deleteTrack(pos); };
+    btnContainer.appendChild(delBtn);
+
+    // Drag events
+    div.ondragstart = (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', pos);
+      div.classList.add('dragging');
+      draggedPos = pos;
+    };
+    div.ondragend = () => {
+      div.classList.remove('dragging');
+      document.querySelectorAll('.queue-item').forEach(el => el.classList.remove('drag-over'));
+      draggedPos = null;
+    };
+    div.ondragover = (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (draggedPos && draggedPos != pos) {
+        div.classList.add('drag-over');
+      }
+    };
+    div.ondragleave = () => {
+      div.classList.remove('drag-over');
+    };
+    div.ondrop = (e) => {
+      e.preventDefault();
+      div.classList.remove('drag-over');
+      const fromPos = parseInt(e.dataTransfer.getData('text/plain'));
+      const toPos = pos;
+      if (fromPos !== toPos) {
+        moveTrack(fromPos, toPos);
+      }
+    };
+
+    div.appendChild(dragHandle);
+    div.appendChild(posSpan);
+    div.appendChild(infoSpan);
+    div.appendChild(btnContainer);
+    div.onclick = () => playTrack(pos);
+    queueEl.appendChild(div);
+    });
+  }
+}
+
+// Queue management functions
+async function deleteTrack(pos) {
+  await api('del', null, [String(pos)]);
+  await update();
+  notify('Removed');
+}
+
+async function moveTrack(from, to) {
+  await api('move', null, [String(from), String(to)]);
+  await update();
+}
+
+async function playTrack(pos) {
+  await api('play', null, [String(pos)]);
+  await update();
+  notify('Playing #' + pos);
+}
+
+// Check if file is already in queue
+async function isInQueue(file) {
+  const playlist = await api('playlist');
+  const tracks = playlist.trim().split('\n').filter(l => l.trim());
+  const filename = file.split('/').pop().replace(/\.[^.]+$/, '');
+  return tracks.some(t => t.includes(filename));
+}
+
+// Add track with duplicate check
+async function addTrack(file, playNow = false) {
+  if (await isInQueue(file)) {
+    notify('Already in queue');
+    return false;
+  }
+
+  const playlist = await api('playlist');
+  const trackCount = playlist.trim().split('\n').filter(l => l.trim()).length;
+
+  await api('add', null, [file]);
+  if (playNow) {
+    await api('play', null, [String(trackCount + 1)]);
+  }
+  await update();
+  notify('Added');
+  return true;
+}
+
+async function findAndAdd(file, playNow = false) {
+  if (await isInQueue(file)) {
+    notify('Already in queue');
+    return false;
+  }
+
+  const playlist = await api('playlist');
+  const trackCount = playlist.trim().split('\n').filter(l => l.trim()).length;
+
+  await api('findadd', null, ['filename', file]);
+  const newPlaylist = await api('playlist');
+  const newTrackCount = newPlaylist.trim().split('\n').filter(l => l.trim()).length;
+
+  if (newTrackCount > trackCount) {
+    if (playNow) {
+      await api('play', null, [String(newTrackCount)]);
+    }
+    await update();
+    notify('Added');
+    return true;
+  } else {
+    notify('Not found in library');
+    return false;
+  }
+}
+
+async function search() {
+  const q = document.getElementById('search-input').value.trim();
+  if (q.length < 2) {
+    document.getElementById('search-results').classList.add('hidden');
+    return;
+  }
+  const res = await api('search', '%file%:::%artist%:::%title%', ['any', q]);
+  const el = document.getElementById('search-results');
+  el.innerHTML = '';
+  el.classList.remove('hidden');
+
+  const lines = res.trim().split('\n').filter(l => l.trim());
+  if (lines.length === 0) {
+    el.innerHTML = '<div style="color: #a1a1aa; padding: 8px;">No results</div>';
+    return;
+  }
+
+  lines.forEach(line => {
+    const [file, artist, title] = line.split(':::');
+    const displayName = (artist && title) ? `${artist} - ${title}` : file;
+    const div = document.createElement('div');
+    div.className = 'px-3 py-2 hover:bg-zinc-800/70 rounded-lg cursor-pointer flex items-start';
+
+    const span = document.createElement('span');
+    span.className = 'flex-1';
+    span.style.color = '#e0e0e0';
+    span.style.wordBreak = 'break-word';
+    span.style.lineHeight = '1.4';
+    span.textContent = displayName;
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'ml-2 px-2 flex-shrink-0';
+    addBtn.style.color = 'var(--neon)';
+    addBtn.innerHTML = '<i class="fa-solid fa-plus"></i>';
+    addBtn.onclick = (e) => { e.stopPropagation(); findAndAdd(file, false); };
+
+    div.appendChild(span);
+    div.appendChild(addBtn);
+    div.onclick = () => findAndAdd(file, true);
+    el.appendChild(div);
+  });
+}
+
+document.getElementById('search-input').addEventListener('input', search);
+
+async function cmd(c, a = []) { await api(c, null, a); await update(); }
+function togglePlay() { cmd(isPlaying ? 'pause' : 'play'); notify(isPlaying ? 'Chill pause 🌙' : 'Drop the beat! 🔥'); }
+function setVolume(v) { api('volume', null, [v]); document.getElementById('vol-text').textContent = v + '%'; }
+
+// Tab init
+showTab('queue-tab');
+
+// Particle Nebula Animation
+const nebulaCanvas = document.getElementById('nebula-canvas');
+const nebulaCtx = nebulaCanvas.getContext('2d');
+let nebulaParticles = [];
+let nebulaAnimationId = null;
+const PARTICLE_COUNT = 60;
+
+class Particle {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.x = Math.random() * 320;
+    this.y = Math.random() * 320;
+    this.vx = (Math.random() - 0.5) * 0.5;
+    this.vy = (Math.random() - 0.5) * 0.5;
+    this.radius = Math.random() * 3 + 1;
+    this.alpha = Math.random() * 0.5 + 0.3;
+    this.pulse = Math.random() * Math.PI * 2;
+    this.pulseSpeed = Math.random() * 0.02 + 0.01;
+    // Neon color variations
+    const colors = ['#39ff14', '#00ff88', '#14ff9c', '#7fff00', '#00ffcc'];
+    this.color = colors[Math.floor(Math.random() * colors.length)];
+  }
+
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.pulse += this.pulseSpeed;
+
+    // Wrap around edges
+    if (this.x < 0) this.x = 320;
+    if (this.x > 320) this.x = 0;
+    if (this.y < 0) this.y = 320;
+    if (this.y > 320) this.y = 0;
+  }
+
+  draw(ctx) {
+    const pulseAlpha = this.alpha * (0.7 + 0.3 * Math.sin(this.pulse));
+    const pulseRadius = this.radius * (0.8 + 0.2 * Math.sin(this.pulse));
+
+    // Outer glow
+    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, pulseRadius * 4);
+    gradient.addColorStop(0, this.color + Math.floor(pulseAlpha * 80).toString(16).padStart(2, '0'));
+    gradient.addColorStop(0.5, this.color + '22');
+    gradient.addColorStop(1, 'transparent');
+
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, pulseRadius * 4, 0, Math.PI * 2);
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    // Core
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, pulseRadius, 0, Math.PI * 2);
+    ctx.fillStyle = this.color;
+    ctx.globalAlpha = pulseAlpha;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function initNebula() {
+  nebulaParticles = [];
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    nebulaParticles.push(new Particle());
+  }
+}
+
+function drawConnections(ctx) {
+  ctx.strokeStyle = '#39ff1422';
+  ctx.lineWidth = 0.5;
+
+  for (let i = 0; i < nebulaParticles.length; i++) {
+    for (let j = i + 1; j < nebulaParticles.length; j++) {
+      const dx = nebulaParticles[i].x - nebulaParticles[j].x;
+      const dy = nebulaParticles[i].y - nebulaParticles[j].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < 60) {
+        ctx.globalAlpha = (1 - dist / 60) * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(nebulaParticles[i].x, nebulaParticles[i].y);
+        ctx.lineTo(nebulaParticles[j].x, nebulaParticles[j].y);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function animateNebula() {
+  nebulaCtx.fillStyle = '#0a0a0a';
+  nebulaCtx.fillRect(0, 0, 320, 320);
+
+  drawConnections(nebulaCtx);
+
+  for (const p of nebulaParticles) {
+    p.update();
+    p.draw(nebulaCtx);
+  }
+
+  nebulaAnimationId = requestAnimationFrame(animateNebula);
+}
+
+function startNebula() {
+  if (!nebulaAnimationId) {
+    if (nebulaParticles.length === 0) initNebula();
+    animateNebula();
+  }
+}
+
+function stopNebula() {
+  if (nebulaAnimationId) {
+    cancelAnimationFrame(nebulaAnimationId);
+    nebulaAnimationId = null;
+  }
+}
+
+// Modify showArtImage to stop nebula
+const origShowArtImage = showArtImage;
+showArtImage = function(url) {
+  stopNebula();
+  origShowArtImage(url);
+};
+
+// Modify showArtPlaceholder to start nebula
+const origShowArtPlaceholder = showArtPlaceholder;
+showArtPlaceholder = function() {
+  origShowArtPlaceholder();
+  startNebula();
+};
+
+// Initial load
+initNebula();
+showArtPlaceholder();
+setInterval(update, 1200);
+update();
+</script>
+</body>
+</html>
