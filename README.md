@@ -1,7 +1,12 @@
 # mpd-web
-version: 1.0
 
-A web interface for controlling Music Player Daemon (MPD).
+(mpd-spiffy)<br>
+version: 1.0
+<p>
+System status: $   {\color{#238636} ONLINE}   $ <br>
+   A spiffy cyberpunk-style web interface for controlling Music Player Daemon (MPD).
+</p>
+
 
 ## Features
 
@@ -116,8 +121,8 @@ mpd-web/
 
 ## Author
 
-mpd-web
-Ryon Shane Hall
+mpd-web<br>
+Ryon Shane Hall<br>
 Updated: 202602042035
 
 ## Thanks
