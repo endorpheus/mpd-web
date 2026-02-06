@@ -128,7 +128,7 @@ Updated: 202602042035
 
 This app is just a *spiffy* controller for some great software, **MPD** and **MPC**. They are great and you should check them out if you haven't yet.
 
-   man mpd
-   man mpc 
+   man mpd<br>
+   man mpc<br> 
 
 
