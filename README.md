@@ -3,7 +3,6 @@
 (mpd-spiffy)<br>
 version: 1.0
 <p>
-System status: $   {\color{#238636} ONLINE}   $ <br>
    A spiffy cyberpunk-style web interface for controlling Music Player Daemon (MPD).
 </p>
 
